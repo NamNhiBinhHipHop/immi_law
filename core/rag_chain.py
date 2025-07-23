@@ -66,7 +66,7 @@ Original query: {query}
 First, analyze the query carefully with context:
 1. What is the core information need behind this query given all the chat history?
 2. What are the key entities and concepts in this query?
-3. What are 1-2 DIFFERENT ASPECTS or angles of this topic that would be valuable to explore in this specific case of this user through the chat history?
+3. What are 5-7 DIFFERENT ASPECTS or angles of this topic that would be valuable to explore in this specific case of this user through the chat history?
 4. What related concepts would provide useful context for a complete answer?
 
 # QUERY GENERATION INSTRUCTIONS
@@ -110,9 +110,8 @@ Your entire response MUST be valid parseable JSON, starting with '[' and ending 
 Do not include any text before or after the JSON array.
 
 Example of CORRECT response format:
-["query 1", "query 2"]
+["query 1", "query 2", "query 3", "query 4", "query 5"]
 
-IMPORTANT: Only return 1-2 queries, do not return more than 2 queries.
 """
     try:
         response = ask_llm(prompt)
