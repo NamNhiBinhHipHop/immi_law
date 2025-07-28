@@ -28,6 +28,8 @@ def ask_llm(prompt: str) -> str:
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
 
+
+
 # --- Immigration Domain Detection ---
 def is_immigration_related(query: str, chat_history: str = "") -> bool:
     prompt = f"""
@@ -50,6 +52,55 @@ Respond with ONLY YES or NO.
     except Exception as e:
         add_debug(f"⚠️ LLM classification error: {e}")
         return False
+
+# --- Query Transformation ---
+def transform_query(query: str, chat_history: str = "") -> str:
+    """
+    Transform unclear or ambiguous queries by comprehending context from chat history.
+    """
+    prompt = f"""
+CHAT HISTORY:
+{chat_history}
+
+You are an expert at comprehending user intent from conversation context. Your task is to read the entire chat history and understand what the user is referring to when they use ambiguous or unclear terms.
+
+ORIGINAL QUERY: "{query}"
+
+INSTRUCTIONS:
+1. Carefully read the entire chat history to understand the conversation context
+2. Identify any ambiguous, unclear, or context-dependent references in the current query
+3. If the query is already clear and specific with no ambiguous references, return it unchanged
+4. If the query contains ambiguous references, resolve them by:
+   - Looking at the chat history to understand what the user is referring to
+   - Replacing ambiguous terms with the specific topics/concepts from the conversation
+   - Maintaining the user's original intent and meaning
+   - Making the query specific enough for effective search
+
+RESOLUTION RULES:
+- Replace any ambiguous references with the specific topics from chat history
+- Add missing context from the conversation when needed, don't make up any information, don't make assumptions, don't make it too specific
+- Keep the transformed query natural and conversational
+- Preserve the user's original intent and question structure
+
+EXAMPLES:
+- Query: "Tell me more about it" (after discussing green cards) → "Tell me more about green card eligibility requirements"
+- Query: "How long does this take?" (after discussing naturalization) → "How long does the naturalization process take?"
+- Query: "What documents do I need?" (after discussing work visas) → "What documents do I need for a work visa application?"
+- Query: "Can you explain that?" (after discussing USCIS) → "Can you explain what USCIS is and their role in immigration?"
+
+RESPONSE FORMAT:
+Return ONLY the transformed query as a single line of text. If no transformation is needed, return the original query unchanged.
+
+TRANSFORMED QUERY:
+"""
+    try:
+        response = ask_llm(prompt)
+        transformed = response.strip().strip('"')
+        add_debug(f"🔍 Query transformation: '{query}' → '{transformed}'")
+        return transformed if transformed else query
+    except Exception as e:
+        add_debug(f"⚠️ Query transformation error: {e}")
+        return query
 
 # --- Query Expansion ---
 def query_expansion(query: str, chat_history: str = "") -> list:
@@ -219,16 +270,18 @@ You are an expert research analyst and outline creator. Your task is to create a
 
 ORIGINAL QUERY: {original_query}
 
-SEARCH CONTEXT:
+SEARCH CONTEXT (EXPANDED SUBQUESTIONS AND THEIR ANSWERS):
 {search_context}
 
-INSTRUCTIONS:
-Your task is to formulate an OUTLINE ONLY for a complete answer with three distinct sections:
+IMPORTANT: The search context above contains EXPANDED SUBQUESTIONS and their corresponding answers that were generated to comprehensively explore different aspects of the original query. These are NOT the original query itself, but rather detailed research questions and findings that help answer the original query.
 
-1. KEY POINTS: List 5-7 bullet points that would be the most important findings and facts
-2. DIRECT ANSWER: Provide a brief description of what should be covered in the direct answer section (2-3 paragraphs)
+INSTRUCTIONS:
+Your task is to formulate an OUTLINE ONLY for a complete answer to the ORIGINAL QUERY with three distinct sections:
+
+1. KEY POINTS: List 5-7 bullet points that would be the most important findings and facts from the search results
+2. DIRECT ANSWER: Provide a brief description of what should be covered in the direct answer section (2-3 paragraphs) to address the original query
 3. DETAILED NOTES: Create a comprehensive outline with:
-   a. Main section headings (3-5 sections)
+   a. Main section headings (3-5 sections) that organize the information from the search results
    b. For each section, provide 2-3 sub-points that should be covered
    c. Note any specific technical details, examples, or comparisons that should be included
    d. Suggest logical flow for presenting the information
@@ -239,13 +292,14 @@ IMPORTANT RULES:
 3. If information is missing or unclear, note it as a limitation rather than making assumptions
 4. Use direct quotes from search results when appropriate
 5. Maintain academic rigor and avoid speculation
+6. Focus on answering the ORIGINAL QUERY using the information from the expanded subquestions and answers
 
 Format your outline using proper markdown sections. THIS IS ONLY AN OUTLINE - do not write the full content.
 Make the outline detailed enough that a content writer can easily expand it into a complete, informative answer.
 
 The outline should follow this structure:
 ```
-# OUTLINE: [Query Title]
+# OUTLINE: [Original Query Title]
 
 ## 1. KEY POINTS
 - Key point 1 
@@ -253,7 +307,7 @@ The outline should follow this structure:
 ...
 
 ## 2. DIRECT ANSWER
-[Brief description of what the direct answer should cover]
+[Brief description of what the direct answer should cover to address the original query]
 
 ## 3. DETAILED NOTES
 ### [Section Heading 1]
@@ -349,9 +403,17 @@ def deep_search_pipeline(query: str, chat_history: str = "", progress_callback=N
     debug_log = ""
     debug_start_time = time.time()
     if progress_callback:
-        progress_callback(0.01, "Classifying query")
+        progress_callback(0.01, "Transforming query")
     add_debug("START THE DEEP SEARCH PROCESS")
-    if not is_immigration_related(query, chat_history=chat_history):
+    
+    # Transform unclear or ambiguous queries
+    transformed_query = transform_query(query, chat_history=chat_history)
+    add_debug(f"🔍 Original query: '{query}'")
+    add_debug(f"🔍 Transformed query: '{transformed_query}'")
+    
+    if progress_callback:
+        progress_callback(0.03, "Classifying query")
+    if not is_immigration_related(transformed_query, chat_history=chat_history):
         if progress_callback:
             progress_callback(0.05, "Classifying query")
         prompt = f"""
@@ -360,7 +422,7 @@ CHAT HISTORY:
 
 You are an expert immigration lawyer specialized in US immigration and citizenship. Your task is to give legal advice based on the original query.
 
-USER QUERY: {query}
+USER QUERY: {transformed_query}
 
 Please respond accordingly, if the user query is not related to immigration, please let them know.
 """
@@ -373,7 +435,7 @@ Please respond accordingly, if the user query is not related to immigration, ple
     
     if progress_callback:
         progress_callback(0.10, "Expanding queries")
-    subquestions = query_expansion(query, chat_history=chat_history)
+    subquestions = query_expansion(transformed_query, chat_history=chat_history)
     answers = [None] * len(subquestions)
     max_iterations = 3
     previous_knowledge_gaps = []
@@ -389,7 +451,7 @@ Please respond accordingly, if the user query is not related to immigration, ple
         if progress_callback:
             progress_callback(0.30 + i * 0.20, "Checking answer quality")
         accepted, new_subquestions = check_answers_quality(
-            subquestions, answers, original_query=query, iteration=i + 1, previous_knowledge_gaps=previous_knowledge_gaps, max_iterations=max_iterations, chat_history=chat_history
+            subquestions, answers, original_query=transformed_query, iteration=i + 1, previous_knowledge_gaps=previous_knowledge_gaps, max_iterations=max_iterations, chat_history=chat_history
         )
         if not accepted:
             previous_knowledge_gaps.extend([q for q in new_subquestions if q not in previous_knowledge_gaps])
@@ -398,10 +460,10 @@ Please respond accordingly, if the user query is not related to immigration, ple
             break
     if progress_callback:
         progress_callback(0.80, "Writing outline")
-    outline = write_outline(query, subquestions, answers, chat_history=chat_history)
+    outline = write_outline(transformed_query, subquestions, answers, chat_history=chat_history)
     if progress_callback:
         progress_callback(0.90, "Generating answer")
-    final_answer = generate_final_answer(query, subquestions, answers, outline, chat_history=chat_history)
+    final_answer = generate_final_answer(transformed_query, subquestions, answers, outline, chat_history=chat_history)
     add_debug(f"TOTAL TIME: {time.time() - debug_start_time:.2f}s")
     if progress_callback:
         progress_callback(1.0, "Done")
